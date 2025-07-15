@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.csv
+*.cap
+*.log
+scan_output*
+*.db
+usb-storage/*
